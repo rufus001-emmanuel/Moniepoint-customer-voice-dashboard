@@ -121,7 +121,7 @@ except (OSError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError) as
 metrics = load_evaluation_metrics()
 confusion_df = load_confusion_matrix()
 errors_df = load_errors()
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent
 # ================= HEADER =================
 c1,c2,c3 = st.columns([1.2,5,1.3])
 with c1:
