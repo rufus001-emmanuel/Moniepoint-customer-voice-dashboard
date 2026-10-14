@@ -1,6 +1,6 @@
-streamlit
-pandas
+streamlit>=1.36
+pandas>=2.0
 numpy
-plotly
-google-genai
+plotly>=5.20
+google-genai>=1.0
 pydantic

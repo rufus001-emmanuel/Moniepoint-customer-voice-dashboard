@@ -1,406 +1,247 @@
-import importlib
-import os
 from pathlib import Path
 
-pd = importlib.import_module("pandas")
-st = importlib.import_module("streamlit")
-px = importlib.import_module("plotly.express")
-go = importlib.import_module("plotly.graph_objects")
+import pandas as pd
+import plotly.express as px
+import streamlit as st
 
-from src.data_utils import (
-    get_business_summary,
-    get_complaint_counts,
-    load_confusion_matrix,
-    load_errors,
-    load_evaluation_metrics,
-    load_reviews,
-)
-
-# Try import gemini, but make it optional
 try:
-    from google.genai.errors import APIError
+    from data_utils import normalize_reviews  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - graceful fallback for local execution
+    def normalize_reviews(df):
+        out = df.copy()
+        for col in ["review_id", "review_text", "rating", "review_date", "userName"]:
+            if col not in out:
+                out[col] = ""
+        out["review_text_original"] = out.get("review_text", "").fillna("")
+        out["review_text_english"] = out.get("review_text", "").fillna("")
+        out["sentiment"] = ""
+        out["complaint_category"] = ""
+        return out
 
-    from src.gemini_classifier import classify_review, get_client
-    GEMINI_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    GEMINI_AVAILABLE = False
-
-# ================= CONFIG =================
-st.set_page_config(
-    page_title="Moniepoint | Customer Intelligence",
-    page_icon="💙",
-    layout="wide",
-)
-
-# ================= PREMIUM CSS - MONIEPOINT AUTHENTIC =================
-st.markdown("""
+st.set_page_config(page_title="Moniepoint Customer Voice Dashboard", page_icon="M", layout="wide", initial_sidebar_state="expanded")
+BLUE="#0755E9"; NAVY="#0A1D55"; GREEN="#078F72"; YELLOW="#F3BD20"; RED="#EF4056"; MUTED="#637493"
+st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-.main { background: #f6f8fc; }
-.block-container { padding-top: 1.2rem; max-width: 1400px; }
-
-/* KPI CARDS */
-.kpi-card {
-    background: white;
-    border-radius: 18px;
-    padding: 18px 20px;
-    box-shadow: 0 4px 24px rgba(3,87,238,0.06);
-    border: 1px solid #e8eeff;
-    height: 110px;
-}
-.kpi-label { font-size: 11px; font-weight: 700; color: #8a9ab5; text-transform: uppercase; letter-spacing: 0.8px; }
-.kpi-value { font-size: 28px; font-weight: 800; color: #0a2540; margin-top: 6px; }
-.kpi-sub { font-size: 12px; font-weight: 500; color: #5a6d8a; margin-top: 2px; }
-.positive { color: #00a05e; }.negative { color: #ff3b30; }.neutral { color: #8a9ab5; }
-
-/* HEADER */
-.monie-header {
-    background: white;
-    border-radius: 20px;
-    padding: 18px 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    box-shadow: 0 4px 24px rgba(3,87,238,0.06);
-    border: 1px solid #e8eeff;
-}
-
-/* INSIGHT CARD */
-.insight-card {
-    background: linear-gradient(135deg, #0A46E4 0%, #0357EE 100%);
-    border-radius: 20px;
-    padding: 22px 26px;
-    color: white;
-}
-.action-card {
-    background: white;
-    border-radius: 16px;
-    padding: 18px;
-    border: 1px solid #e8eeff;
-    border-left: 4px solid #0A46E4;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.04);
-    margin-bottom: 12px;
-}
-.quote-card {
-    background: white;
-    border-radius: 14px;
-    padding: 16px;
-    border-left: 4px solid #ff3b30;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.04);
-    margin-bottom: 12px;
-}
-
-/* ============ PROFESSIONAL MOBILE - SAME LOOK AS DESKTOP, FITS PHONE ============ */
-@media (max-width: 768px) {
-   .block-container {
-        padding-left: 12px!important;
-        padding-right: 12px!important;
-        padding-top: 0.8rem!important;
-        max-width: 100%!important;
-    }
-    /* Hide Streamlit top padding / menu crowding */
-    [data-testid="stHeader"] { background: transparent; }
-    [data-testid="stToolbar"] { right: 0.5rem; }
-
-    /* --- Header: stack neatly, centred, professional --- */
-    [data-testid="stHorizontalBlock"]:first-of-type {
-        flex-direction: column!important;
-        align-items: flex-start!important;
-        gap: 2px!important;
-    }
-    [data-testid="stHorizontalBlock"]:first-of-type [data-testid="column"] {
-        width: 100%!important;
-        min-width: 100%!important;
-        flex: 1 1 100%!important;
-    }
-    [data-testid="stHorizontalBlock"]:first-of-type img { width: 130px!important; }
-
-    /* --- KPI ROW: 2 per row = 3 rows, exactly like desktop but readable --- */
-    /* This is the 2nd horizontal block on the page (the KPI row) */
-    /* We use wrap + 48% width so it becomes a clean 2x3 grid */
-    [data-testid="stHorizontalBlock"] {
-        flex-wrap: wrap!important;
-[13/10/2026 11:00] Rufus: gap: 10px!important;
-    }
-    [data-testid="column"] {
-        min-width: calc(50% - 5px)!important;
-        flex: 1 1 calc(50% - 5px)!important;
-        max-width: calc(50% - 5px)!important;
-    }
-   .kpi-card {
-        height: 108px!important;
-        padding: 14px 14px!important;
-        border-radius: 16px!important;
-    }
-   .kpi-label { font-size: 10px!important; letter-spacing: 0.5px!important; }
-   .kpi-value { font-size: 24px!important; margin-top: 4px!important; }
-   .kpi-sub { font-size: 11px!important; }
-
-    /* --- Tabs: horizontal scroll like a real mobile app --- */
-    [data-testid="stTabs"] [data-testid="stTab"] { white-space: nowrap!important; font-size: 13px!important; }
-    div[data-testid="stHorizontalBlock"] button { font-size: 13px!important; }
-
-    /* --- Inside tabs: full width, no squeezing --- */
-    /* Tab content columns should stack to full width for charts */
-    [data-testid="stTabContent"] [data-testid="stHorizontalBlock"] {
-        flex-direction: column!important;
-    }
-    [data-testid="stTabContent"] [data-testid="column"] {
-        min-width: 100%!important;
-        flex: 1 1 100%!important;
-        max-width: 100%!important;
-    }
-   .insight-card { padding: 18px 18px!important; border-radius: 16px!important; }
-   .insight-card div:nth-child(2) { font-size: 24px!important; }
-    h1 { font-size: 22px!important; line-height: 1.2!important; }
-    h3 { font-size: 16px!important; }
-    /* Tables / dataframes: allow horizontal swipe */
-    [data-testid="stDataFrame"] { overflow-x: auto!important; }
-    /* Sidebar button bigger */
-    [data-testid="collapsedControl"] { top: 0.5rem; }
-}
+html, body, [class*="css"] {{font-family:Inter,Arial,sans-serif;}}
+.stApp {{background:#F5F8FD; color:{NAVY};}}
+.block-container {{padding-top:1rem;padding-bottom:2rem;max-width:1600px;}}
+[data-testid="stSidebar"] {{background:linear-gradient(180deg,#064DE0 0%,#0739B4 100%);}}
+[data-testid="stSidebar"] * {{color:white !important;}}
+[data-testid="stSidebar"] [data-testid="stFileUploader"] {{background:#ffffff18;border:1px solid #ffffff55;border-radius:10px;padding:8px;}}
+[data-testid="stMetric"] {{background:white;border:1px solid #DFE7F3;border-radius:13px;padding:15px 16px;min-height:112px;box-shadow:0 2px 8px #183c6a08;}}
+[data-testid="stMetricLabel"] p {{font-size:12px;color:#526483 !important;}}
+[data-testid="stMetricValue"] {{color:{NAVY};font-weight:800;}}
+h1,h2,h3 {{color:{NAVY};}}
+div[data-testid="stTabs"] button {{font-weight:600;}}
+.panel {{background:white;border:1px solid #DFE7F3;border-radius:14px;padding:16px 18px;margin-bottom:12px;}}
+.subtle {{color:{MUTED};font-size:12px;}}
+.kicker {{font-size:12px;color:{MUTED};font-weight:600;letter-spacing:.04em;text-transform:uppercase;}}
 </style>
 """, unsafe_allow_html=True)
 
-# ================= LOAD DATA =================
-try:
-    df = load_reviews()
-except (OSError, ValueError) as e:
-    st.error(str(e))
+# Sidebar / file loading
+st.sidebar.markdown("<div style='font-size:25px;font-weight:800;line-height:1.2'>▣ Moniepoint</div><div style='font-size:10px;letter-spacing:2px;margin-top:5px;opacity:.85'>CUSTOMER VOICE</div>", unsafe_allow_html=True)
+st.sidebar.markdown("---")
+page=st.sidebar.radio("NAVIGATION",["Dashboard","Customer Feedback","Complaints by Topic","Model Health","Test & Review"],label_visibility="visible")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ▽ Filters")
+up=st.sidebar.file_uploader("Upload your current CSV",type=["csv"],help="Expected columns: review_id, review_text, rating, review_date, userName")
+if up is not None:
+    try:
+        raw=pd.read_csv(up)
+        source=f"Uploaded file: {up.name}"
+        st.session_state["last_uploaded_csv_name"]=up.name
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, ValueError, TypeError, OSError) as e:
+        st.error(f"Could not read CSV: {e}"); st.stop()
+else:
+    default_path=Path("data/moniepoint_reviews.csv")
+    if default_path.exists() and default_path.stat().st_size>10:
+        raw=pd.read_csv(default_path); source=str(default_path)
+    else:
+        raw=pd.DataFrame(); source="No file loaded"
+
+if raw.empty:
+    st.title("Moniepoint Customer Voice")
+    st.markdown("### Understand your customers. Identify problems. Improve their experience.")
+    st.info("Upload your existing CSV in the blue sidebar to populate the dashboard. The data you pasted in chat appears to stop partway through a row, so this project does not pretend that partial text is your complete dataset.")
+    st.markdown("#### Quick setup")
+    st.write("1. Click **Browse files** in the left sidebar.  2. Select your complete CSV.  3. The charts and figures will calculate from those rows automatically.")
     st.stop()
 
-metrics = load_evaluation_metrics()
-confusion_df = load_confusion_matrix()
-errors_df = load_errors()
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-# ================= HEADER =================
-logo_paths = [
-    BASE_DIR/"data"/"logo.png",
-    BASE_DIR/"src"/"assets"/"logo.png",
-    BASE_DIR/"assets"/"logo.png",
-    BASE_DIR/"logo.png",
+# Normalize and derive useful fields from the real uploaded data
+df=normalize_reviews(raw)
+df["rating"]=pd.to_numeric(df["rating"],errors="coerce")
+df["review_date"]=pd.to_datetime(df["review_date"],errors="coerce")
+for c in ["review_text_original","review_text_english","sentiment","complaint_category","userName"]:
+    if c not in df: df[c]=""
+    df[c]=df[c].fillna("").astype(str)
+df["display_text"]=df["review_text_english"].where(df["review_text_english"].str.strip().ne(""),df["review_text_original"])
+# Transparent baseline sentiment: use an existing valid label first; otherwise use rating bands.
+def sentiment(row):
+    s=str(row.get("sentiment","")).strip().title()
+    if s in {"Positive","Neutral","Negative"}: return s
+    r=row.get("rating")
+    if pd.isna(r): return "Unclassified"
+    return "Positive" if r>=4 else ("Neutral" if r==3 else "Negative")
+df["sentiment_display"]=df.apply(sentiment,axis=1)
+# Keyword topic fallback, clearly identified as preliminary, used only where topic absent.
+TOPICS=[
+ ("Failed Transfer",["transfer","transaction","withdraw","not going through","send money","declining"]),
+ ("Account Issues",["account","lien","debited","negative balance","balance","money is showing","can't use my money","cant use my money"]),
+ ("Login / Access",["access my account","can't access","cant access","login","log in","pin","biometric"]),
+ ("KYC / Verification",["verify","verification","upgrade my account","upgrade me","kyc"]),
+ ("App Experience",["slow","download","update my app","app is","network","not working","keeps saying update"]),
+ ("Customer Support",["customer service","customer support","support are","support didn't","support did not"]),
+ ("Fees / Charges",["charge","charges","stamp duty","fee","fees"]),
+ ("Card / Payments",["card","airtime","data","cashback","loan"]),
+ ("Security / Fraud",["fraud","scam","security","secure"]),
 ]
+def topic(text):
+    t=str(text).lower()
+    for label, words in TOPICS:
+        if any(w in t for w in words): return label
+    return "Other"
+existing=df["complaint_category"].str.strip().ne("")
+df.loc[~existing,"complaint_category"]=df.loc[~existing,"display_text"].map(topic)
+# Define potential complaint using existing flag if available; otherwise negative sentiment or topic-specific issue wording.
+if "is_complaint" not in df: df["is_complaint"]=""
+def complaint(row):
+    x=str(row.get("is_complaint","")).strip().lower()
+    if x in {"true","1","yes","y"}: return True
+    if x in {"false","0","no","n"}: return False
+    return row["sentiment_display"]=="Negative" or (row["complaint_category"]!="Other" and row["rating"]<=3 if pd.notna(row["rating"]) else False)
+df["potential_complaint"]=df.apply(complaint,axis=1)
 
-c1, c2, c3 = st.columns([1.2, 5, 1.5])
-with c1:
-    found = False
-    for lp in logo_paths:
-        if lp.exists():
-            st.image(str(lp), width=165)
-            found = True
-            break
-    if not found:
-        st.markdown("<h2 style='margin:0; color:#0A46E4;'>💙 Moniepoint</h2>", unsafe_allow_html=True)
+# Real filters
+filtered=df.copy()
+valid_dates=df["review_date"].dropna()
+if len(valid_dates):
+    min_d,max_d=valid_dates.min().date(),valid_dates.max().date()
+    date_range=st.sidebar.date_input("Date range",value=(min_d,max_d),min_value=min_d,max_value=max_d)
+    if isinstance(date_range,(tuple,list)) and len(date_range)==2:
+        filtered=filtered[filtered["review_date"].dt.date.between(date_range[0],date_range[1])]
+segment=st.sidebar.selectbox("Customer segment",["All","Positive","Neutral","Negative"])
+if segment!="All": filtered=filtered[filtered["sentiment_display"]==segment]
+feedback_type=st.sidebar.selectbox("Feedback type",["All","Potential complaints","Non-complaints"])
+if feedback_type=="Potential complaints": filtered=filtered[filtered["potential_complaint"]]
+elif feedback_type=="Non-complaints": filtered=filtered[~filtered["potential_complaint"]]
+rating_options=sorted([int(x) for x in filtered["rating"].dropna().unique() if 1<=x<=5])
+selected_ratings=st.sidebar.multiselect("Star rating",rating_options,default=rating_options)
+if selected_ratings: filtered=filtered[filtered["rating"].isin(selected_ratings)]
+elif rating_options: filtered=filtered.iloc[0:0]
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Data source: {source}")
+st.sidebar.caption(f"{len(df):,} unique rows loaded")
 
-with c2:
-    st.markdown("""
-    <div style='padding-left:10px;'>
-        <h1 style='margin:0; font-size:28px; font-weight:800; color:#0a2540; letter-spacing:-0.5px;'>Customer Intelligence Hub</h1>
-        <p style='margin:2px 0 0 0; color:#5a6d8a; font-size:14px; font-weight:500;'>Real-time voice of 600+ customers • Powered by Gemini • For Product & CX Teams</p>
-    </div>
-    """, unsafe_allow_html=True)
+# Header
+header_left,header_right=st.columns([3,1])
+with header_left:
+    st.markdown("<div class='kicker'>MONIEPOINT · CUSTOMER EXPERIENCE ANALYTICS</div>",unsafe_allow_html=True)
+    st.title("Customer Voice Dashboard")
+    st.caption("Understand your customers. Identify problems. Improve their experience.")
+with header_right:
+    st.markdown(f"<div style='text-align:right;padding-top:14px;color:{MUTED};font-size:12px'>CSV ANALYSIS MODE<br><b style='color:{NAVY}'>Not connected to live reviews</b></div>",unsafe_allow_html=True)
+st.markdown("<div class='panel'><b>How to use this dashboard</b><br><span class='subtle'>Start with the numbers at the top. Use the tabs to explore customer feedback, complaint topics, and data quality. Filters on the left update the figures and charts.</span></div>",unsafe_allow_html=True)
 
-with c3:
-    st.markdown(f"""
-    <div style='text-align:right;'>
-        <div style='font-size:11px; font-weight:700; color:#8a9ab5; text-transform:uppercase;'>Live Data</div>
-        <div style='font-size:14px; font-weight:700; color:#0a2540;'>{len(df)} Reviews • {df['rating'].mean():.2f} Avg ★</div>
-        <div style='font-size:11px; color:#00a05e; font-weight:600; margin-top:4px;'>● System Active</div>
-    </div>
-    """, unsafe_allow_html=True)
+# KPIs computed from filtered rows; no invented previous-period percentages
+n=len(filtered); pos=int((filtered.sentiment_display=="Positive").sum()); neu=int((filtered.sentiment_display=="Neutral").sum()); neg=int((filtered.sentiment_display=="Negative").sum()); complaints=int(filtered.potential_complaint.sum())
+avg=filtered.rating.mean() if filtered.rating.notna().any() else None
+neg_topics=filtered.loc[filtered.potential_complaint,"complaint_category"].value_counts()
+top_topic=neg_topics.index[0] if len(neg_topics) else "Not identified"
+cols=st.columns(6)
+cols[0].metric("Total Feedback",f"{n:,}",help="Number of rows matching the current filters")
+cols[1].metric("Happy Customers",f"{(pos/n):.1%}" if n else "—",f"{pos:,} positive reviews")
+cols[2].metric("Unhappy Customers",f"{(neg/n):.1%}" if n else "—",f"{neg:,} negative reviews")
+cols[3].metric("Average Rating",f"{avg:.2f} / 5" if avg is not None else "—")
+cols[4].metric("Potential Complaints",f"{complaints:,}",help="Rule-based estimate unless is_complaint was supplied in the data")
+cols[5].metric("Biggest Complaint",top_topic,help="Most frequent topic among potential complaints")
 
-st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-
-# ================= SIDEBAR =================
-st.sidebar.markdown("### Filters")
-if "review_date" in df.columns:
-    min_d = pd.to_datetime(df["review_date"]).min()
-    max_d = pd.to_datetime(df["review_date"]).max()
-    if pd.notna(min_d) and pd.notna(max_d):
-        date_range = st.sidebar.date_input("Date", value=(min_d.date(), max_d.date()), min_value=min_d.date(), max_value=max_d.date())
-    else:
-        date_range = None
-else:
-    date_range = None
-sent_opts = ["All", "Positive", "Negative", "Neutral"]
-sel_sent = st.sidebar.selectbox("Sentiment", sent_opts)
-cat_opts = ["All"] + sorted(df["category"].dropna().unique().tolist()) if "category" in df.columns else ["All"]
-sel_cat = st.sidebar.selectbox("Category", cat_opts)
-rate_opts = ["All", 1, 2, 3, 4, 5]
-sel_rate = st.sidebar.selectbox("Rating", rate_opts)
-
-# APPLY
-fdf = df.copy()
-if date_range and len(date_range)==2:
-    s = pd.Timestamp(date_range[0]); e = pd.Timestamp(date_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    fdf = fdf[(fdf["review_date"]>=s) & (fdf["review_date"]<=e)]
-if sel_sent!="All": fdf = fdf[fdf["sentiment"]==sel_sent]
-if sel_cat!="All": fdf = fdf[fdf["category"]==sel_cat]
-if sel_rate!="All": fdf = fdf[fdf["rating"]==sel_rate]
-
-summary = get_business_summary(fdf)
-
-# ================= KPI ROW =================
-k1,k2,k3,k4,k5,k6 = st.columns(6)
-with k1: st.markdown(f"<div class='kpi-card'><div class='kpi-label'>Voices Analyzed</div><div class='kpi-value'>{summary['total_feedback']:,}</div><div class='kpi-sub'>Total feedback</div></div>", unsafe_allow_html=True)
-with k2: st.markdown(f"<div class='kpi-card'><div class='kpi-label'>Satisfaction</div><div class='kpi-value positive'>{summary['positive_pct']:.1f}%</div><div class='kpi-sub'> {summary['positive_count']} positive</div></div>", unsafe_allow_html=True)
-with k3: st.markdown(f"<div class='kpi-card'><div class='kpi-label'>At Risk</div><div class='kpi-value negative'>{summary['negative_pct']:.1f}%</div><div class='kpi-sub'> {summary['negative_count']} complaints</div></div>", unsafe_allow_html=True)
-with k4: st.markdown(f"<div class='kpi-card'><div class='kpi-label'>Avg Rating</div><div class='kpi-value'>{summary['average_rating']:.2f} ★</div><div class='kpi-sub'>Out of 5.0</div></div>", unsafe_allow_html=True)
-with k5: st.markdown(f"<div class='kpi-card'><div class='kpi-label'>Revenue Risk</div><div class='kpi-value' style='color:#ff7a00;'>High</div><div class='kpi-sub'>{summary['total_complaints']} merchants affected</div></div>", unsafe_allow_html=True)
-with k6: st.markdown(f"<div class='kpi-card'><div class='kpi-label'>Top Issue</div><div class='kpi-value' style='font-size:16px; margin-top:12px;'>{summary['top_complaint_category']}</div><div class='kpi-sub'>{summary['top_complaint_count']} cases</div></div>", unsafe_allow_html=True)
-
-st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
-
-# ================= TABS =================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([" Executive Summary", " Customer Voice", " Complaint Intelligence", " Model Health", " Live Test"])
-
-with tab1:
-    col_left, col_right = st.columns([2, 1.2])
-    with col_left:
-        st.markdown(f"""
-        <div class='insight-card'>
-            <div style='font-size:12px; font-weight:700; letter-spacing:1px; opacity:0.8; text-transform:uppercase;'>🔥 Biggest Customer Problem This Week</div>
-            <div style='font-size:30px; font-weight:800; margin:10px 0 6px 0;'>{summary['top_complaint_category']}</div>
-            <div style='font-size:14px; line-height:1.5; opacity:0.92;'> {summary['top_complaint_count']} negative reviews mention this. Customers say app is slow, transfers fail, and money is debited without reversal. This directly impacts merchant retention and trust.</div>
-            <div style='margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;'>
-                <span style='background:rgba(255,255,255,0.2); padding:6px 12px; border-radius:20px; font-size:12px; font-weight:600;'>Impact: High</span>
-                <span style='background:rgba(255,255,255,0.2); padding:6px 12px; border-radius:20px; font-size:12px; font-weight:600;'>Priority: P0</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-        st.markdown("####  Recommended Action Plan for Product Team")
-        st.markdown("""
-        <div class='action-card'>
-            <b>1. Fix Transfer Reversal Logic (P0 - This Week)</b><br>
-            <span style='color:#5a6d8a; font-size:13px;'>68% of complaints say "transfer failed but account debited". Implement instant auto-reversal + in-app status tracker. Expected: -40% complaints.</span>
-        </div>
-        <div class='action-card' style='border-left-color:#00a05e;'>
-            <b>2. Improve App Performance (P1 - Next 2 Weeks)</b><br>
-            <span style='color:#5a6d8a; font-size:13px;'>App Experience is top issue. Optimize login, reduce crashes, add offline queue for POS. This will increase rating from 4.25 → 4.6.</span>
-        </div>
-        <div class='action-card' style='border-left-color:#ff7a00;'>
-            <b>3. Proactive Customer Update (P1)</b><br>
-            <span style='color:#5a6d8a; font-size:13px;'>Send SMS/Push when reversal done. Customers complain they don't know when money returns. Transparency = trust.</span>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col_right:
-        st.markdown("####  Sentiment Breakdown")
-        sent_counts = fdf["sentiment"].value_counts().reset_index()
-        sent_counts.columns = ["sentiment","count"]
-        color_map = {"Positive":"#00a05e","Negative":"#ff3b30","Neutral":"#ffcc02"}
-        fig = px.pie(sent_counts, values='count', names='sentiment', hole=0.6, color='sentiment', color_discrete_map=color_map)
-        fig.update_layout(showlegend=True, height=260, margin={"l": 10, "r": 10, "t": 10, "b": 10}, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.markdown("####  Sentiment Over Time")
-        tdf = fdf.dropna(subset=["review_date"]).copy()
-        if not tdf.empty:
-            tdf["date"] = pd.to_datetime(tdf["review_date"]).dt.date
-            stime = tdf.groupby(["date","sentiment"]).size().reset_index(name="count")
-            fig2 = px.line(stime, x="date", y="count", color="sentiment", markers=True, color_discrete_map=color_map)
-            fig2.update_layout(height=250, margin={"l": 0, "r": 0, "t": 10, "b": 0}, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            fig2.update_traces(line_width=2.5)
-            st.plotly_chart(fig2, use_container_width=True)
-
-with tab2:
-    st.markdown("### Real Customer Voices")
-    search = st.text_input("Search reviews", placeholder="Type 'transfer', 'slow', 'failed'...")
-    vdf = fdf.copy()
-    if search.strip():
-        vdf = vdf[vdf["review_text"].str.contains(search, case=False, na=False)]
-
-    neg = vdf[vdf["sentiment"].str.lower()=="negative"].sort_values("review_date", ascending=False).head(6)
-    st.markdown(f"####  Recent Negative Examples ({len(neg)} shown)")
-    for _, r in neg.iterrows():
-        st.markdown(f"""
-        <div class='quote-card'>
-            <b style='color:#0A46E4;'>{r['category']}</b> • {r['rating']} ★ • {str(r['review_date'])[:10]}<br>
-            <i>"{r['review_text'][:280]}"</i><br>
-            <span style='font-size:11px; color:#8a9ab5; font-weight:600; background:#f0f4ff; padding:3px 8px; border-radius:10px; margin-top:6px; display:inline-block;'>CHURN RISK</span>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("#### All Reviews")
-    cols = [c for c in ["review_date","rating","sentiment","category","review_text"] if c in vdf.columns]
-    st.dataframe(vdf[cols].sort_values("review_date", ascending=False), use_container_width=True, hide_index=True, height=400)
-
-with tab3:
-    st.markdown("###  Complaint Intelligence - Where Moniepoint Loses Trust")
-    c1,c2 = st.columns([1.3, 1])
-    with c1:
-        comp = get_complaint_counts(fdf)
-        if not comp.empty:
-            fig = px.bar(comp, x="count", y="category", orientation='h', color="count", color_continuous_scale=["#e8eeff","#0A46E4"], text="count")
-            fig.update_layout(height=420, coloraxis_showscale=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin={'l': 0, 'r': 0, 't': 10, 'b': 0})
-            st.plotly_chart(fig, use_container_width=True)
-    with c2:
-        st.markdown("####  What Customers Really Mean")
-        if not fdf.empty:
-            txt = " ".join(fdf[fdf["sentiment"].str.lower()=="negative"]["review_text"].astype(str).tolist()).lower()
-            keywords = {"transfer": txt.count("transfer"), "failed": txt.count("failed"), "debit": txt.count("debit"), "slow": txt.count("slow"), "app": txt.count("app"), "network": txt.count("network")}
-            top_kw = sorted(keywords.items(), key=lambda x: x[1], reverse=True)[:5]
-            for k,v in top_kw:
-                st.markdown(f"<div style='background:white; padding:10px 14px; border-radius:10px; margin-bottom:8px; border:1px solid #e8eeff;'><b style='color:#0A46E4;'>{k.upper()}</b> <span style='float:right; background:#0A46E4; color:white; padding:2px 8px; border-radius:10px; font-size:12px;'>{v} mentions</span></div>", unsafe_allow_html=True)
-
-        st.info("Business Impact: Each unresolved transfer complaint = 1 merchant may switch to Opay/PalmPay. At 5.8% negative rate, ~35 merchants at risk weekly.")
-
-with tab4:
-    st.markdown("### Model Health - Gemini Performance")
-    if metrics:
-        m1,m2,m3,m4 = st.columns(4)
-        with m1: st.metric("Sentiment Accuracy", f"{float(metrics.get('sentiment_accuracy', metrics.get('accuracy',0)))*100:.1f}%")
-        with m2: st.metric("Macro-F1", f"{float(metrics.get('sentiment_macro_f1', metrics.get('macro_f1',0))):.3f}")
-        with m3: st.metric("Category F1", f"{float(metrics.get('category_macro_f1',0)):.3f}")
-        with m4: st.metric("Test Size", f"{int(metrics.get('test_size', len(df)))}")
-    if confusion_df is not None and not confusion_df.empty:
-        st.markdown("#### Confusion Matrix")
-        st.dataframe(confusion_df, use_container_width=True, hide_index=True)
-    if errors_df is not None and not errors_df.empty:
-        st.markdown("#### Real Model Mistakes - Where Gemini Failed")
-        st.dataframe(errors_df.head(20), use_container_width=True, hide_index=True)
-
-with tab5:
-    st.markdown("###  Live Customer Review Classifier")
-    st.markdown("Paste any new Moniepoint review from Play Store and see instant classification. Works even without API key.")
-    new_review = st.text_area("Customer review", placeholder="Example: My transfer failed since yesterday and my account was debited, money has not returned. Very poor service.", height=120)
-
-    def local_classify(text):
-        t = text.lower()
-        neg_words = ['bad','poor','slow','failed','fail','scam','fraud','worst','terrible','hate','issue','problem','not working','disappoint','useless','stuck','error','debit','rubbish']
-        pos_words = ['good','great','love','excellent','fast','best','easy','nice','helpful','awesome','perfect','smooth','reliable','wonderful','amazing']
-        if any(w in t for w in neg_words): sent = "Negative"
-        elif any(w in t for w in pos_words): sent = "Positive"
-        else: sent = "Neutral"
-        if any(w in t for w in ['transfer','transaction','send','debit','credit','money','reversal']): cat = "Transfers"
-        elif any(w in t for w in ['app','crash','login','slow','bug','update','open']): cat = "App Experience"
-        elif any(w in t for w in ['support','service','agent','customer','care','response']): cat = "Customer Support"
-        elif any(w in t for w in ['fee','charge','deduct']): cat = "Fees/Charges"
-        elif any(w in t for w in ['pos','terminal']): cat = "POS"
-        else: cat = "General"
-        conf = 0.92 if sent=="Negative" and "transfer" in t else 0.87
-        return sent, cat, conf
-    if st.button(" Classify Review", type="primary"):
-        if not new_review.strip():
-            st.warning("Please enter a review first.")
+if page=="Dashboard":
+    st.markdown("#### Overview")
+    left,right=st.columns([1.45,1])
+    with left:
+        st.markdown("<div class='panel'>",unsafe_allow_html=True); st.subheader("Customer Feedback Trend")
+        trend=filtered.dropna(subset=["review_date"]).copy()
+        if not trend.empty:
+            span=(trend.review_date.max()-trend.review_date.min()).days
+            trend["Period"]=trend.review_date.dt.strftime("%Y-%m-%d") if span<=14 else trend.review_date.dt.to_period("M").astype(str)
+            tg=trend.groupby(["Period","sentiment_display"]).size().reset_index(name="Reviews")
+            fig=px.line(tg,x="Period",y="Reviews",color="sentiment_display",markers=True,color_discrete_map={"Positive":GREEN,"Neutral":YELLOW,"Negative":RED,"Unclassified":"#9AA7BA"})
+            fig.update_layout(height=300,margin={"l": 5, "r": 5, "t": 5, "b": 5},paper_bgcolor="white",plot_bgcolor="white",legend_title_text="",xaxis_title="",yaxis_title="Reviews",font_color=NAVY)
+            st.plotly_chart(fig,use_container_width=True)
+        else: st.info("No usable dates in the current selection.")
+        st.markdown("</div>",unsafe_allow_html=True)
+    with right:
+        st.markdown("<div class='panel'>",unsafe_allow_html=True); st.subheader("Customer Sentiment")
+        sc=filtered["sentiment_display"].value_counts().reindex(["Positive","Neutral","Negative","Unclassified"],fill_value=0).reset_index(); sc.columns=["Sentiment","Reviews"]; sc=sc[sc.Reviews>0]
+        if not sc.empty:
+            fig=px.pie(sc,names="Sentiment",values="Reviews",hole=.63,color="Sentiment",color_discrete_map={"Positive":GREEN,"Neutral":YELLOW,"Negative":RED,"Unclassified":"#9AA7BA"})
+            fig.update_layout(height=300,margin={"l": 0, "r": 0, "t": 5, "b": 5},paper_bgcolor="white",legend_title_text="")
+            st.plotly_chart(fig,use_container_width=True)
+        else: st.info("No reviews match the filters.")
+        st.markdown("</div>",unsafe_allow_html=True)
+    a,b=st.columns([1,1.45])
+    with a:
+        st.markdown("<div class='panel'>",unsafe_allow_html=True); st.subheader("Top Complaint Categories")
+        cat=filtered.loc[filtered.potential_complaint,"complaint_category"].value_counts().head(7).rename_axis("Category").reset_index(name="Reviews")
+        if cat.empty: st.info("No potential complaints match the current filters.")
         else:
-            api_key = None
-            from streamlit.errors import StreamlitSecretNotFoundError
-            try:
-                api_key = st.secrets.get("GEMINI_API_KEY")
-            except StreamlitSecretNotFoundError:
-                api_key = None
-            if not api_key: api_key = os.getenv("GEMINI_API_KEY")
+            fig=px.bar(cat,x="Reviews",y="Category",orientation="h",text="Reviews",color_discrete_sequence=[BLUE]); fig.update_layout(height=285,margin={"l": 0, "r": 0, "t": 0, "b": 0},yaxis={"categoryorder":"total ascending"},paper_bgcolor="white",plot_bgcolor="white",xaxis_title="Reviews",yaxis_title="")
+            st.plotly_chart(fig,use_container_width=True)
+        st.markdown("</div>",unsafe_allow_html=True)
+    with b:
+        st.markdown("<div class='panel'>",unsafe_allow_html=True); st.subheader("Recent Customer Feedback")
+        recent=filtered.sort_values("review_date",ascending=False,na_position="last").head(6)
+        if recent.empty: st.info("No reviews match the current filters.")
+        else:
+            show=recent[[c for c in ["review_date","rating","sentiment_display","complaint_category","display_text"] if c in recent.columns]].copy()
+            show["review_date"]=show["review_date"].dt.strftime("%b %d, %Y").fillna("")
+            st.dataframe(show,use_container_width=True,hide_index=True,height=285)
+        st.markdown("</div>",unsafe_allow_html=True)
+    st.markdown("<div class='panel'><b>Quick Insights</b>",unsafe_allow_html=True)
+    if n:
+        st.write(f"• Positive: **{pos:,} ({pos/n:.1%})** · Neutral: **{neu:,} ({neu/n:.1%})** · Negative: **{neg:,} ({neg/n:.1%})**")
+        st.write(f"• **{complaints:,}** reviews are currently flagged as potential complaints.")
+        st.write(f"• Most frequent potential-complaint topic: **{top_topic}**.")
+    else: st.write("No data matches the selected filters.")
+    st.caption("No previous-period comparison is shown because this quick version does not invent comparison figures. All visible metrics are recalculated from the loaded CSV and active filters.")
+    st.markdown("</div>",unsafe_allow_html=True)
+elif page=="Customer Feedback":
+    st.title("What Customers Are Saying")
+    q=st.text_input("Search review text or customer name",placeholder="Try: transfer, account, slow, customer support…")
+    view=filtered.copy()
+    if q.strip():
+        mask=view["display_text"].str.contains(q.strip(),case=False,na=False,regex=False) | view["userName"].str.contains(q.strip(),case=False,na=False,regex=False)
+        view=view[mask]
+    st.caption(f"Showing {len(view):,} reviews")
+    show=view[[c for c in ["review_id","review_date","userName","rating","sentiment_display","complaint_category","display_text"] if c in view.columns]].sort_values("review_date",ascending=False,na_position="last")
+    st.dataframe(show,use_container_width=True,hide_index=True)
+    st.download_button("Download filtered feedback CSV",view.to_csv(index=False).encode("utf-8-sig"),"moniepoint_filtered_feedback.csv","text/csv")
+elif page=="Complaints by Topic":
+    st.title("Complaints by Topic")
+    st.caption("Complaint flags and topics are rule-based estimates unless supplied by an earlier classifier. Review them before treating them as verified findings.")
+    view=filtered[filtered.potential_complaint].copy()
+    topics=view["complaint_category"].value_counts().rename_axis("Topic").reset_index(name="Count")
+    l,r=st.columns([1,1.4])
+    with l: st.subheader("Topic distribution"); st.dataframe(topics,use_container_width=True,hide_index=True)
+    with r: st.subheader("Complaint review details"); st.dataframe(view[[c for c in ["review_date","rating","userName","complaint_category","display_text"] if c in view.columns]].sort_values("review_date",ascending=False,na_position="last"),use_container_width=True,hide_index=True)
+    st.download_button("Download potential complaints CSV",view.to_csv(index=False).encode("utf-8-sig"),"moniepoint_potential_complaints.csv","text/csv")
+elif page=="Model Health":
+    st.title("Model Health & Data Quality")
+    total=len(df)
+    checks=[("Rows loaded",total),("Unique review IDs",df.loc[df.review_id.astype(str).str.strip().ne(""),"review_id"].nunique()),("Rows with review text",int(df.display_text.str.strip().ne("").sum())),("Rows with valid dates",int(df.review_date.notna().sum())),("Rows with valid 1–5 ratings",int(df.rating.between(1,5).sum())),("Existing sentiment labels",int(df.sentiment.isin(["Positive","Neutral","Negative"]).sum())),("Existing topic labels",int(df.complaint_category.str.strip().ne("").sum()))]
+    st.dataframe(pd.DataFrame(checks,columns=["Check","Result"]),use_container_width=True,hide_index=True)
+    st.info("This quick-start uses rating-based sentiment when no valid sentiment label exists and keyword-based complaint topics when no topic is provided. Gemini is not called automatically in this presentation version.")
+    st.download_button("Download normalized data",df.to_csv(index=False).encode("utf-8-sig"),"moniepoint_normalized_reviews.csv","text/csv")
+elif page=="Test & Review":
+    st.title("Test & Review")
+    st.write("Run basic checks on the dataset loaded into the dashboard.")
+    if st.button("Run data validation",type="primary"):
+        checks={"Dataset is loaded":len(df)>0,"Review text column is available":"display_text" in df.columns,"Ratings are within 1–5":bool(df.rating.dropna().between(1,5).all()),"Dates parsed":bool(df.review_date.notna().any()),"Review IDs have no duplicates":bool(df.loc[df.review_id.astype(str).str.strip().ne(""),"review_id"].duplicated().sum()==0)}
+        for label,passed in checks.items(): st.success(f"PASS — {label}") if passed else st.warning(f"CHECK — {label}")
+        st.caption("These are local data validation tests, not live API or live Play Store connection tests.")
+    st.markdown("#### Preview")
+    st.dataframe(df.head(20)[[c for c in ["review_id","review_date","rating","sentiment_display","complaint_category","display_text"] if c in df.columns]],use_container_width=True,hide_index=True)
 
-            if api_key and GEMINI_AVAILABLE:
-                try:
-                    with st.spinner("Gemini AI is analyzing..."):
-                        client = get_client(api_key)
-                        result = classify_review(client, new_review)
-                        r1,r2,r3 = st.column
-                except APIError:
-                    result = local_classify(new_review)
-
+st.markdown("<div style='text-align:center;color:#8190A9;font-size:11px;padding:20px 0 0'>MONIEPOINT CUSTOMER VOICE · PRESENTATION BUILD · CSV-BASED ANALYSIS</div>",unsafe_allow_html=True)
