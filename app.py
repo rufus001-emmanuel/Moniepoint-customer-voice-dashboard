@@ -20,21 +20,52 @@ except ImportError:  # pragma: no cover - graceful fallback for local execution
 
 st.set_page_config(page_title="Moniepoint Customer Voice Dashboard", page_icon="M", layout="wide", initial_sidebar_state="expanded")
 BLUE="#0755E9"; NAVY="#0A1D55"; GREEN="#078F72"; YELLOW="#F3BD20"; RED="#EF4056"; MUTED="#637493"
+
+def _plotly_chart_layout(height: int, *, x_title: str = "", y_title: str = "") -> dict:
+    return dict(
+        height=height,
+        margin=dict(l=8, r=8, t=8, b=8),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color=NAVY, family="Inter, Arial, sans-serif", size=12),
+        xaxis=dict(
+            title=x_title,
+            title_font=dict(color=MUTED, size=12),
+            tickfont=dict(color=MUTED, size=11),
+            gridcolor="#E3EBF5",
+            linecolor="#E3EBF5",
+            zerolinecolor="#E3EBF5",
+        ),
+        yaxis=dict(
+            title=y_title,
+            title_font=dict(color=MUTED, size=12),
+            tickfont=dict(color=NAVY, size=12),
+            gridcolor="#E3EBF5",
+            linecolor="#E3EBF5",
+            zerolinecolor="#E3EBF5",
+        ),
+        legend=dict(font=dict(color=NAVY)),
+    )
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 html, body, [class*="css"] {{font-family:Inter,Arial,sans-serif;}}
 .stApp {{background:#F5F8FD; color:{NAVY};}}
 .block-container {{padding-top:1rem;padding-bottom:2rem;max-width:1600px;}}
-[data-testid="stSidebar"] {{background:linear-gradient(180deg,#064DE0 0%,#0739B4 100%);}}
-[data-testid="stSidebar"] * {{color:white !important;}}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] {{background:#ffffff18;border:1px solid #ffffff55;border-radius:10px;padding:8px;}}
+section[data-testid="stSidebar"] {{background:linear-gradient(180deg,#064DE0 0%,#0739B4 100%) !important;}}
+section[data-testid="stSidebar"] * {{color:#FFFFFF !important;}}
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] a {{color:#E8F0FF !important;}}
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] {{background:#ffffff18;border:1px solid #ffffff55;border-radius:10px;padding:8px;}}
+[data-testid="stMainBlockContainer"] [data-testid="stDataFrame"] {{background:#FFFFFF;border:1px solid #DFE7F3;border-radius:10px;overflow:hidden;}}
+[data-testid="stMainBlockContainer"] [data-testid="stDataFrame"] * {{color:{NAVY} !important;}}
 [data-testid="stMetric"] {{background:white;border:1px solid #DFE7F3;border-radius:13px;padding:15px 16px;min-height:112px;box-shadow:0 2px 8px #183c6a08;}}
 [data-testid="stMetricLabel"] p {{font-size:12px;color:#526483 !important;}}
-[data-testid="stMetricValue"] {{color:{NAVY};font-weight:800;}}
-h1,h2,h3 {{color:{NAVY};}}
+[data-testid="stMetricValue"] {{color:{NAVY};font-weight:800;font-size:1.25rem !important;line-height:1.2;}}
+[data-testid="stMetricValue"] div {{overflow:visible !important;text-overflow:unset !important;white-space:normal !important;}}
+[data-testid="stMainBlockContainer"] h1,[data-testid="stMainBlockContainer"] h2,[data-testid="stMainBlockContainer"] h3,[data-testid="stMainBlockContainer"] h4 {{color:{NAVY};}}
 div[data-testid="stTabs"] button {{font-weight:600;}}
 .panel {{background:white;border:1px solid #DFE7F3;border-radius:14px;padding:16px 18px;margin-bottom:12px;}}
+[data-testid="stVerticalBlockBorderWrapper"] {{background:white;border-color:#DFE7F3 !important;border-radius:14px;padding:16px 18px;margin-bottom:12px;box-shadow:0 2px 8px #183c6a08;}}
 .subtle {{color:{MUTED};font-size:12px;}}
 .kicker {{font-size:12px;color:{MUTED};font-weight:600;letter-spacing:.04em;text-transform:uppercase;}}
 </style>
@@ -113,6 +144,26 @@ def complaint(row):
     return row["sentiment_display"]=="Negative" or (row["complaint_category"]!="Other" and row["rating"]<=3 if pd.notna(row["rating"]) else False)
 df["potential_complaint"]=df.apply(complaint,axis=1)
 
+def build_validation_checks(frame: pd.DataFrame) -> list[tuple[str, bool]]:
+    """Local CSV validation checks for Test & Review (plain bools, safe on partial schemas)."""
+    loaded = len(frame) > 0
+    has_text_col = "display_text" in frame.columns
+    ratings = frame["rating"].dropna() if "rating" in frame.columns else pd.Series(dtype=float)
+    ratings_ok = bool(ratings.empty or ratings.between(1, 5).all())
+    dates_ok = bool("review_date" in frame.columns and frame["review_date"].notna().any())
+    if "review_id" in frame.columns:
+        ids = frame.loc[frame["review_id"].astype(str).str.strip().ne(""), "review_id"]
+        no_dupes = bool(ids.empty or ids.duplicated().sum() == 0)
+    else:
+        no_dupes = False
+    return [
+        ("Dataset is loaded", loaded),
+        ("Review text column is available", has_text_col),
+        ("Ratings are within 1-5", ratings_ok),
+        ("Dates parsed", dates_ok),
+        ("Review IDs have no duplicates", no_dupes),
+    ]
+
 # Real filters
 filtered=df.copy()
 valid_dates=df["review_date"].dropna()
@@ -150,63 +201,70 @@ avg=filtered.rating.mean() if filtered.rating.notna().any() else None
 neg_topics=filtered.loc[filtered.potential_complaint,"complaint_category"].value_counts()
 top_topic=neg_topics.index[0] if len(neg_topics) else "Not identified"
 cols=st.columns(6)
-cols[0].metric("Total Feedback",f"{n:,}",help="Number of rows matching the current filters")
-cols[1].metric("Happy Customers",f"{(pos/n):.1%}" if n else "—",f"{pos:,} positive reviews")
-cols[2].metric("Unhappy Customers",f"{(neg/n):.1%}" if n else "—",f"{neg:,} negative reviews")
-cols[3].metric("Average Rating",f"{avg:.2f} / 5" if avg is not None else "—")
-cols[4].metric("Potential Complaints",f"{complaints:,}",help="Rule-based estimate unless is_complaint was supplied in the data")
-cols[5].metric("Biggest Complaint",top_topic,help="Most frequent topic among potential complaints")
+cols[0].metric("Total Feedback", f"{n:,}", help="Number of rows matching the current filters")
+cols[1].metric("Happy Customers", f"{(pos/n):.1%}" if n else "—", help=f"{pos:,} positive reviews")
+cols[2].metric("Unhappy Customers", f"{(neg/n):.1%}" if n else "—", help=f"{neg:,} negative reviews")
+cols[3].metric("Average Rating", f"{avg:.2f}/5" if avg is not None else "—", help="Mean star rating in the current filter selection")
+cols[4].metric("Potential Complaints", f"{complaints:,}", help="Rule-based estimate unless is_complaint was supplied in the data")
+cols[5].metric("Biggest Complaint", top_topic, help="Most frequent topic among potential complaints")
 
 if page=="Dashboard":
     st.markdown("#### Overview")
-    left,right=st.columns([1.45,1])
-    with left:
-        st.markdown("<div class='panel'>",unsafe_allow_html=True); st.subheader("Customer Feedback Trend")
+    with st.container(border=True):
+        st.subheader("Customer Feedback Trend")
         trend=filtered.dropna(subset=["review_date"]).copy()
         if not trend.empty:
             span=(trend.review_date.max()-trend.review_date.min()).days
             trend["Period"]=trend.review_date.dt.strftime("%Y-%m-%d") if span<=14 else trend.review_date.dt.to_period("M").astype(str)
             tg=trend.groupby(["Period","sentiment_display"]).size().reset_index(name="Reviews")
             fig=px.line(tg,x="Period",y="Reviews",color="sentiment_display",markers=True,color_discrete_map={"Positive":GREEN,"Neutral":YELLOW,"Negative":RED,"Unclassified":"#9AA7BA"})
-            fig.update_layout(height=300,margin={"l": 5, "r": 5, "t": 5, "b": 5},paper_bgcolor="white",plot_bgcolor="white",legend_title_text="",xaxis_title="",yaxis_title="Reviews",font_color=NAVY)
+            trend_layout=_plotly_chart_layout(360, y_title="Reviews")
+            trend_layout["legend"].update(title_text="", orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            fig.update_layout(**trend_layout)
             st.plotly_chart(fig,use_container_width=True)
         else: st.info("No usable dates in the current selection.")
-        st.markdown("</div>",unsafe_allow_html=True)
-    with right:
-        st.markdown("<div class='panel'>",unsafe_allow_html=True); st.subheader("Customer Sentiment")
+    with st.container(border=True):
+        st.subheader("Customer Sentiment")
         sc=filtered["sentiment_display"].value_counts().reindex(["Positive","Neutral","Negative","Unclassified"],fill_value=0).reset_index(); sc.columns=["Sentiment","Reviews"]; sc=sc[sc.Reviews>0]
         if not sc.empty:
-            fig=px.pie(sc,names="Sentiment",values="Reviews",hole=.63,color="Sentiment",color_discrete_map={"Positive":GREEN,"Neutral":YELLOW,"Negative":RED,"Unclassified":"#9AA7BA"})
-            fig.update_layout(height=300,margin={"l": 0, "r": 0, "t": 5, "b": 5},paper_bgcolor="white",legend_title_text="")
+            fig=px.pie(sc,names="Sentiment",values="Reviews",hole=.55,color="Sentiment",color_discrete_map={"Positive":GREEN,"Neutral":YELLOW,"Negative":RED,"Unclassified":"#9AA7BA"})
+            pie_layout=_plotly_chart_layout(340)
+            pie_layout["legend"].update(title_text="", orientation="h", yanchor="bottom", y=-0.08, xanchor="center", x=0.5)
+            pie_layout["margin"]["b"]=48
+            fig.update_layout(**pie_layout)
             st.plotly_chart(fig,use_container_width=True)
         else: st.info("No reviews match the filters.")
-        st.markdown("</div>",unsafe_allow_html=True)
     a,b=st.columns([1,1.45])
     with a:
-        st.markdown("<div class='panel'>",unsafe_allow_html=True); st.subheader("Top Complaint Categories")
-        cat=filtered.loc[filtered.potential_complaint,"complaint_category"].value_counts().head(7).rename_axis("Category").reset_index(name="Reviews")
-        if cat.empty: st.info("No potential complaints match the current filters.")
-        else:
-            fig=px.bar(cat,x="Reviews",y="Category",orientation="h",text="Reviews",color_discrete_sequence=[BLUE]); fig.update_layout(height=285,margin={"l": 0, "r": 0, "t": 0, "b": 0},yaxis={"categoryorder":"total ascending"},paper_bgcolor="white",plot_bgcolor="white",xaxis_title="Reviews",yaxis_title="")
-            st.plotly_chart(fig,use_container_width=True)
-        st.markdown("</div>",unsafe_allow_html=True)
+        with st.container(border=True):
+            st.subheader("Top Complaint Categories")
+            cat=filtered.loc[filtered.potential_complaint,"complaint_category"].value_counts().head(7).rename_axis("Category").reset_index(name="Reviews")
+            if cat.empty: st.info("No potential complaints match the current filters.")
+            else:
+                fig=px.bar(cat,x="Reviews",y="Category",orientation="h",text="Reviews",color_discrete_sequence=[BLUE])
+                fig.update_traces(textposition="inside", insidetextanchor="end", textfont=dict(color="white", size=11))
+                bar_layout=_plotly_chart_layout(285, x_title="Reviews")
+                bar_layout["yaxis"]["categoryorder"]="total ascending"
+                fig.update_layout(**bar_layout)
+                st.plotly_chart(fig,use_container_width=True)
     with b:
-        st.markdown("<div class='panel'>",unsafe_allow_html=True); st.subheader("Recent Customer Feedback")
-        recent=filtered.sort_values("review_date",ascending=False,na_position="last").head(6)
-        if recent.empty: st.info("No reviews match the current filters.")
-        else:
-            show=recent[[c for c in ["review_date","rating","sentiment_display","complaint_category","display_text"] if c in recent.columns]].copy()
-            show["review_date"]=show["review_date"].dt.strftime("%b %d, %Y").fillna("")
-            st.dataframe(show,use_container_width=True,hide_index=True,height=285)
-        st.markdown("</div>",unsafe_allow_html=True)
-    st.markdown("<div class='panel'><b>Quick Insights</b>",unsafe_allow_html=True)
-    if n:
-        st.write(f"• Positive: **{pos:,} ({pos/n:.1%})** · Neutral: **{neu:,} ({neu/n:.1%})** · Negative: **{neg:,} ({neg/n:.1%})**")
-        st.write(f"• **{complaints:,}** reviews are currently flagged as potential complaints.")
-        st.write(f"• Most frequent potential-complaint topic: **{top_topic}**.")
-    else: st.write("No data matches the selected filters.")
-    st.caption("No previous-period comparison is shown because this quick version does not invent comparison figures. All visible metrics are recalculated from the loaded CSV and active filters.")
-    st.markdown("</div>",unsafe_allow_html=True)
+        with st.container(border=True):
+            st.subheader("Recent Customer Feedback")
+            st.caption("Latest reviews in the current filters (includes positive feedback, not just complaints).")
+            recent=filtered.sort_values("review_date",ascending=False,na_position="last").head(6)
+            if recent.empty: st.info("No reviews match the current filters.")
+            else:
+                show=recent[[c for c in ["review_date","rating","sentiment_display","complaint_category","display_text"] if c in recent.columns]].copy()
+                show["review_date"]=show["review_date"].dt.strftime("%b %d, %Y").fillna("")
+                st.dataframe(show,use_container_width=True,hide_index=True,height=260,column_config={"display_text": st.column_config.TextColumn("Review", width="large")})
+    with st.container(border=True):
+        st.markdown("<b>Quick Insights</b>",unsafe_allow_html=True)
+        if n:
+            st.write(f"• Positive: **{pos:,} ({pos/n:.1%})** · Neutral: **{neu:,} ({neu/n:.1%})** · Negative: **{neg:,} ({neg/n:.1%})**")
+            st.write(f"• **{complaints:,}** reviews are currently flagged as potential complaints.")
+            st.write(f"• Most frequent potential-complaint topic: **{top_topic}**.")
+        else: st.write("No data matches the selected filters.")
+        st.caption("No previous-period comparison is shown because this quick version does not invent comparison figures. All visible metrics are recalculated from the loaded CSV and active filters.")
 elif page=="Customer Feedback":
     st.title("What Customers Are Saying")
     q=st.text_input("Search review text or customer name",placeholder="Try: transfer, account, slow, customer support…")
@@ -238,8 +296,15 @@ elif page=="Test & Review":
     st.title("Test & Review")
     st.write("Run basic checks on the dataset loaded into the dashboard.")
     if st.button("Run data validation",type="primary"):
-        checks={"Dataset is loaded":len(df)>0,"Review text column is available":"display_text" in df.columns,"Ratings are within 1–5":bool(df.rating.dropna().between(1,5).all()),"Dates parsed":bool(df.review_date.notna().any()),"Review IDs have no duplicates":bool(df.loc[df.review_id.astype(str).str.strip().ne(""),"review_id"].duplicated().sum()==0)}
-        for label,passed in checks.items(): st.success(f"PASS — {label}") if passed else st.warning(f"CHECK — {label}")
+        st.session_state["validation_checks"] = build_validation_checks(df)
+    if st.session_state.get("validation_checks"):
+        for label, passed in st.session_state["validation_checks"]:
+            msg = f"PASS — {label}" if passed else f"CHECK — {label}"
+            with st.container():
+                if passed:
+                    st.success(msg)
+                else:
+                    st.warning(msg)
         st.caption("These are local data validation tests, not live API or live Play Store connection tests.")
     st.markdown("#### Preview")
     st.dataframe(df.head(20)[[c for c in ["review_id","review_date","rating","sentiment_display","complaint_category","display_text"] if c in df.columns]],use_container_width=True,hide_index=True)
